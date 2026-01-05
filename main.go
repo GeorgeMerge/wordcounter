@@ -2,17 +2,27 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"unicode"
 )
 
-type Counts struct {
-	Lines int
-	Words int
-	Bytes int
-}
+type (
+	Counts struct {
+		Name  string `json:"name,omitempty"`
+		Lines int    `json:"lines"`
+		Words int    `json:"words"`
+		Bytes int    `json:"bytes"`
+	}
+
+	IndexedResult struct {
+		Index  int
+		Counts Counts
+	}
+)
 
 func Count(r io.Reader) Counts {
 	var c Counts
@@ -42,25 +52,56 @@ func Count(r io.Reader) Counts {
 	return c
 }
 
-func main() {
-	var input io.Reader = os.Stdin
-	var filename string
+func countMultiple(filenames []string) []Counts {
+	results := make([]Counts, len(filenames))
 
-	if len(os.Args) > 1 {
-		filename = os.Args[1]
-		file, err := os.Open(filename)
-		if err != nil {
-			panic(err)
-		}
-		defer file.Close()
-		input = file
+	var wg sync.WaitGroup
+	resultCh := make(chan IndexedResult, len(filenames))
+
+	for i, filename := range filenames {
+		wg.Add(1)
+		go func(idx int, fname string) {
+			defer wg.Done()
+
+			file, err := os.Open(fname)
+			if err != nil {
+				panic(err)
+			}
+			defer file.Close()
+
+			c := Count(file)
+			c.Name = fname
+			resultCh <- IndexedResult{Index: idx, Counts: c}
+		}(i, filename)
 	}
 
-	c := Count(input)
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
 
-	if filename != "" {
-		fmt.Printf("%8d %7d %7d %s\n", c.Lines, c.Words, c.Bytes, filename)
+	for res := range resultCh {
+		results[res.Index] = res.Counts
+	}
+
+	return results
+}
+
+func printJSON(results []Counts) {
+	output, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(string(output))
+}
+
+func main() {
+	if len(os.Args) > 1 {
+		filenames := os.Args[1:]
+		printJSON(countMultiple(filenames))
 	} else {
-		fmt.Printf("%8d %7d %7d\n", c.Lines, c.Words, c.Bytes)
+		c := Count(os.Stdin)
+		printJSON([]Counts{c})
 	}
 }
